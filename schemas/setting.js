@@ -11,6 +11,7 @@ var SettingSchema = new Schema({
     screenshots: Number,
     tsjiami: String,
     api: String,
+    enableTwoPass: String, // 启用/禁用2pass编码，值为"on"或"off"
     createAt: {
         type: Date,
         default: Date.now()

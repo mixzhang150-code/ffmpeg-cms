@@ -87,6 +87,10 @@ ffmpeg.ffprobe(path,function(err,metadata){
             if(srtexists) {
                 vf = 'movie=' + wmimage + ' [watermark]; [in][watermark] overlay=main_w-overlay_w,subtitles=' + srtpath + '[out]';
             }
+            // 检查是否启用2pass编码（默认启用）
+            var enableTwoPass = setting[0].enableTwoPass !== undefined ? setting[0].enableTwoPass : "on";
+            
+            // 基本配置
             config = [
                 '-s ' + size,
                 '-b:v ' + bv + "k",
@@ -129,43 +133,172 @@ ffmpeg.ffprobe(path,function(err,metadata){
 }
 
 function ffmpegtransandchunk(des, path, config, vf, id) {
+    // 从配置中判断是否启用2pass
+    Setting.find()
+        .exec(function(err, setting) {
+            if(err) {
+                console.log(err);
+                // 如果获取设置失败，使用默认值
+                singlePassTranscode(des, path, config, vf, id);
+                return;
+            }
+            
+            var enableTwoPass = setting[0].enableTwoPass !== undefined ? setting[0].enableTwoPass : "on";
+            
+            if (enableTwoPass === "on") {
+                twoPassTranscode(des, path, config, vf, id);
+            } else {
+                singlePassTranscode(des, path, config, vf, id);
+            }
+        });
+}
+
+// 单通道转码（原有的实现）
+function singlePassTranscode(des, path, config, vf, id) {
     ffmpeg(path)
         .addOptions(config)
         .addOption('-vf', vf)
         .output(des + '/index.m3u8')
         .on('start', function () {
-            Movie.findOne({
-                    _id: id
-                })
-                .exec(function (err, movie) {
-                    if (err) {
-                        console.log(err);
-                    }
-                    movie.status = "trans&chunk";
-                    movie.save(function (err) {
-                        console.log(err);
-                    })
-                });
+            updateMovieStatus(id, "trans&chunk");
         })
         .on('error', function (err, stdout, stderr) {
             console.log('Cannot process video: ' + path + err.message);
         })
         .on('end', function () {
-            screenshots(path, des);
-            Movie.findOne({
-                    _id: id
-                })
-                .exec(function (err, movie) {
-                    if (err) {
-                        console.log(err);
-                    }
-                    movie.status = "finished";
-                    movie.save(function (err) {
-                        console.log(err);
-                    })
-                })
+            completeTranscode(path, des, id);
         })
-        .run()
+        .run();
+}
+
+// 双通道转码实现
+function twoPassTranscode(des, path, config, vf, id) {
+    // 第一步：收集统计信息
+    var firstPassConfig = [...config];
+    // 移除输出格式相关参数，替换为null输出
+    firstPassConfig = firstPassConfig.filter(option => !option.startsWith('-start_number') && !option.startsWith('-hls_time') && !option.startsWith('-hls_list_size') && !option.startsWith('-f hls'));
+    firstPassConfig.push('-pass 1', '-an', '-f null');
+    
+    // 第二步：实际编码
+    var secondPassConfig = [...config];
+    secondPassConfig.push('-pass 2');
+    
+    console.log('开始2pass编码 - 第一阶段');
+    updateMovieStatus(id, "trans&chunk_pass1");
+    
+    // 执行第一阶段
+    ffmpeg(path)
+        .addOptions(firstPassConfig)
+        .addOption('-vf', vf)
+        .output('/dev/null') // Unix系统
+        .on('error', function(err, stdout, stderr) {
+            console.log('2pass第一阶段错误: ' + err.message);
+            // 如果/dev/null不存在（Windows系统），尝试使用NUL
+            tryTwoPassWithNUL(des, path, config, vf, id);
+        })
+        .on('end', function() {
+            console.log('完成2pass编码 - 第一阶段');
+            console.log('开始2pass编码 - 第二阶段');
+            updateMovieStatus(id, "trans&chunk_pass2");
+            
+            // 执行第二阶段
+            ffmpeg(path)
+                .addOptions(secondPassConfig)
+                .addOption('-vf', vf)
+                .output(des + '/index.m3u8')
+                .on('error', function(err, stdout, stderr) {
+                    console.log('2pass第二阶段错误: ' + err.message);
+                })
+                .on('end', function() {
+                    console.log('完成2pass编码 - 第二阶段');
+                    // 清理pass文件
+                    cleanupPassFiles(des);
+                    completeTranscode(path, des, id);
+                })
+                .run();
+        })
+        .run();
+}
+
+// 在Windows系统上尝试2pass编码（使用NUL代替/dev/null）
+function tryTwoPassWithNUL(des, path, config, vf, id) {
+    var firstPassConfig = [...config];
+    firstPassConfig = firstPassConfig.filter(option => !option.startsWith('-start_number') && !option.startsWith('-hls_time') && !option.startsWith('-hls_list_size') && !option.startsWith('-f hls'));
+    firstPassConfig.push('-pass 1', '-an', '-f null');
+    
+    var secondPassConfig = [...config];
+    secondPassConfig.push('-pass 2');
+    
+    ffmpeg(path)
+        .addOptions(firstPassConfig)
+        .addOption('-vf', vf)
+        .output('NUL') // Windows系统
+        .on('end', function() {
+            console.log('完成2pass编码 - 第一阶段（Windows）');
+            console.log('开始2pass编码 - 第二阶段');
+            updateMovieStatus(id, "trans&chunk_pass2");
+            
+            ffmpeg(path)
+                .addOptions(secondPassConfig)
+                .addOption('-vf', vf)
+                .output(des + '/index.m3u8')
+                .on('error', function(err, stdout, stderr) {
+                    console.log('2pass第二阶段错误: ' + err.message);
+                })
+                .on('end', function() {
+                    console.log('完成2pass编码 - 第二阶段');
+                    cleanupPassFiles(des);
+                    completeTranscode(path, des, id);
+                })
+                .run();
+        })
+        .run();
+}
+
+// 清理pass文件
+function cleanupPassFiles(des) {
+    try {
+        if (fs.existsSync(des + '/ffmpeg2pass-0.log')) {
+            fs.unlinkSync(des + '/ffmpeg2pass-0.log');
+        }
+        if (fs.existsSync(des + '/ffmpeg2pass-0.log.mbtree')) {
+            fs.unlinkSync(des + '/ffmpeg2pass-0.log.mbtree');
+        }
+    } catch (err) {
+        console.log('清理pass文件错误: ' + err.message);
+    }
+}
+
+// 更新电影状态的辅助函数
+function updateMovieStatus(id, status) {
+    Movie.findOne({ _id: id })
+        .exec(function (err, movie) {
+            if (err) {
+                console.log(err);
+                return;
+            }
+            movie.status = status;
+            movie.save(function (err) {
+                if (err) console.log(err);
+            });
+        });
+}
+
+// 完成转码的辅助函数
+function completeTranscode(path, des, id) {
+    screenshots(path, des);
+    Movie.findOne({ _id: id })
+        .exec(function (err, movie) {
+            if (err) {
+                console.log(err);
+                return;
+            }
+            movie.status = "finished";
+            movie.save(function (err) {
+                if (err) console.log(err);
+            });
+        });
+    }
 }
 function screenshots(path, des) {
     Setting.find()

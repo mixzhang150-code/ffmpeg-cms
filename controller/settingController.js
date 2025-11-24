@@ -29,7 +29,8 @@ exports.setting = function(req, res) {
                     miaoqie: "",
                     tsjiami: "",
                     api: "",
-                    screenshots: 0
+                    screenshots: 0,
+                    enableTwoPass: "on" // 默认启用2pass编码
                 }
             }
             Fenfa.find()
@@ -113,9 +114,13 @@ exports.postsetting = function(req, res) {
     var screenshots = req.body.screenshots;
     var tsjiami = req.body.tsjiami;
     var api = req.body.api;
+    var enableTwoPass = req.body.enableTwoPass;
     antiurlarr = antiurl.split("|");
     if(!miaoqie) {
         miaoqie = "";
+    }
+    if(!enableTwoPass) {
+        enableTwoPass = "";
     }
     Setting.find()
         .exec(function(err,setting){
@@ -133,6 +138,7 @@ exports.postsetting = function(req, res) {
                 setting[0].screenshots = screenshots;
                 setting[0].tsjiami = tsjiami;
                 setting[0].api = api;
+                setting[0].enableTwoPass = enableTwoPass;
                 setting[0].save(function(err) {
                     if(err) {
                         console.log(err);
@@ -149,7 +155,8 @@ exports.postsetting = function(req, res) {
                     screenshots: screenshots,
                     wmpath: wmpath,
                     tsjiami: tsjiami,
-                    api: api
+                    api: api,
+                    enableTwoPass: enableTwoPass
                 }
                 var setting = new Setting(settingobj);
                 setting.save(function(err) {
