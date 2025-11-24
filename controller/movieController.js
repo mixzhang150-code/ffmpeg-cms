@@ -1,25 +1,25 @@
-var Movie = require('../models/movie');
-var Category = require('../models/category');
-var Setting = require('../models/setting');
-var Player = require('../models/player');
-var FFmpeghelper = require('../helper/newffmpeg');
-var ListsFFmpegHelper = require('../helper/listsffmpeg');
-var ffmpegcut = require('../helper/ffmpegcut');
-var fs = require('fs');
-var async = require('async');
-var _ = require('underscore');
-var moment = require('moment');
+const Movie = require('../models/movie');
+const Category = require('../models/category');
+const Setting = require('../models/setting');
+const Player = require('../models/player');
+const FFmpeghelper = require('../helper/newffmpeg');
+const ListsFFmpegHelper = require('../helper/listsffmpeg');
+const ffmpegcut = require('../helper/ffmpegcut');
+const fs = require('fs');
+const async = require('async');
+const _ = require('underscore');
+const moment = require('moment');
 
 /**
  * 上传电影页面
  * @param {Object} req - Express请求对象
  * @param {Object} res - Express响应对象
  */
-exports.getupload = function(req, res){
+exports.getupload = (req, res) => {
     res.render('upload', {
         user: req.session.user,
-        title: "上传电影"
-    })
+        title: '上传电影'
+    });
 }
 
 /**
@@ -27,42 +27,47 @@ exports.getupload = function(req, res){
  * @param {Object} req - Express请求对象
  * @param {Object} res - Express响应对象
  */
-exports.postupload = function(req, res) {
-    var file = req.file;
-    var body = req.body;
-    var des = "./movies/";
-    var filename = file.originalname;
-    var filearr = filename.split(".");
+exports.postupload = (req, res) => {
+    const file = req.file;
+    const body = req.body;
+    const des = './movies/';
+    const filename = file.originalname;
+    const filearr = filename.split('.');
     filearr.pop();
-    var path = filearr.join('.');
-    var tmppath = des + path;
-    var exitst = fs.existsSync(tmppath);
-    if(!exitst) {
+    const path = filearr.join('.');
+    const tmppath = des + path;
+    
+    // 检查并创建临时目录
+    if (!fs.existsSync(tmppath)) {
         fs.mkdirSync(tmppath);
     }
-    var newfilename = filename + body.dzchunkindex;
-    fs.renameSync(file.path, tmppath + "/" + newfilename);
-    if (body.dzchunkindex*1 + 1 == body.dztotalchunkcount*1) {
-        var files = fs.readdirSync(tmppath);
-        for(var i=0; i<files.length;i++){
-            fs.appendFileSync(file.path+"",fs.readFileSync(tmppath+"/"+filename+i));
-            fs.unlinkSync(tmppath + "/" + filename + i);
-        }
+    
+    const newfilename = filename + body.dzchunkindex;
+    fs.renameSync(file.path, tmppath + '/' + newfilename);
+    
+    // 当所有分片上传完成时，合并文件
+    if (parseInt(body.dzchunkindex) + 1 === parseInt(body.dztotalchunkcount)) {
+        const files = fs.readdirSync(tmppath);
+        
+        files.forEach((file, i) => {
+            fs.appendFileSync(file.path + '', fs.readFileSync(tmppath + '/' + filename + i));
+            fs.unlinkSync(tmppath + '/' + filename + i);
+        });
+        
         fs.rmdirSync(tmppath);
-        var movieObj = {
-            status: "waiting",
+        
+        const movieObj = {
+            status: 'waiting',
             originalname: file.originalname,
             path: file.path,
             size: body.dztotalfilesize
-        }
-        var movie = new Movie(movieObj);
-        movie.save(function(err, movie) {
-            if(err) {
-                console.log(err);
-            }
-        });
+        };
+        
+        const movie = new Movie(movieObj);
+        movie.save().catch(err => console.error('保存电影失败:', err));
     }
-    return res.json({success:1});
+    
+    return res.json({ success: 1 });
 }
 
 /**
@@ -333,26 +338,31 @@ exports.listszhuanma = function(req, res) {
  * @param {Object} req - Express请求对象
  * @param {Object} res - Express响应对象
  */
-exports.delete = function(req,res) {
-    var id = req.query.id;
-    Movie.findOne({_id:id})
-        .exec(function(err,movie){
-            if(err) {
-                console.log(err);
-            }
-            movie.remove(function(err){
-                if(err){
-                    console.log(err);
-                }
-                fs.exists(movie.path, function(exists) {
-                    if (exists) {
-                        fs.unlinkSync(movie.path);
-                    }
-                });
-                deleteall("./public/videos/"+id);
-                res.json({success:1});
-            })
-         });
+exports.delete = async (req, res) => {
+    try {
+        const { id } = req.query;
+        const movie = await Movie.findOne({ _id: id }).exec();
+        
+        if (!movie) {
+            return res.json({ success: 0, message: '电影不存在' });
+        }
+        
+        // 删除电影记录
+        await movie.remove();
+        
+        // 删除电影文件
+        if (movie.path && fs.existsSync(movie.path)) {
+            fs.unlinkSync(movie.path);
+        }
+        
+        // 删除视频目录
+        deleteall(`./public/videos/${id}`);
+        
+        res.json({ success: 1 });
+    } catch (error) {
+        console.error('删除电影失败:', error);
+        res.json({ success: 0, message: '删除失败' });
+    }
 }
 
 /**
@@ -360,18 +370,22 @@ exports.delete = function(req,res) {
  * @param {Object} req - Express请求对象
  * @param {Object} res - Express响应对象
  */
-exports.editmovie = function(req, res) {
-    var id = req.params.id;
-    Movie.findOne({_id: id})
-        .exec(function(err, movie) {
-            if(err) {
-                console.log(err);
-            }
-            res.render("editmovie", {
-                title: "修改电影标题",
-                movie: movie
-            })
-        })
+exports.editmovie = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const movie = await Movie.findOne({ _id: id }).exec();
+        
+        res.render('editmovie', {
+            title: '修改电影标题',
+            movie
+        });
+    } catch (error) {
+        console.error('获取电影编辑页面失败:', error);
+        res.status(500).render('error', {
+            message: '服务器内部错误',
+            error
+        });
+    }
 }
 
 /**
@@ -379,22 +393,30 @@ exports.editmovie = function(req, res) {
  * @param {Object} req - Express请求对象
  * @param {Object} res - Express响应对象
  */
-exports.postupdatemovie = function(req, res) {
-    var id = req.params.id;
-    var originalname = req.body.originalname;
-    Movie.findOne({_id: id})
-        .exec(function(err, movie) {
-            if(err) {
-                console.log(err);
-            }
-            movie.originalname = originalname;
-            movie.save(function(err) {
-                if(err) {
-                    console.log(err);
-                }
-                res.redirect("/admin/movies");
-            })
-        })
+exports.postupdatemovie = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { originalname } = req.body;
+        
+        const movie = await Movie.findOne({ _id: id }).exec();
+        if (!movie) {
+            return res.status(404).render('error', {
+                message: '电影不存在',
+                error: { status: 404 }
+            });
+        }
+        
+        movie.originalname = originalname;
+        await movie.save();
+        
+        res.redirect('/admin/movies');
+    } catch (error) {
+        console.error('更新电影失败:', error);
+        res.status(500).render('error', {
+            message: '服务器内部错误',
+            error
+        });
+    }
 }
 
 /**
@@ -403,7 +425,7 @@ exports.postupdatemovie = function(req, res) {
  * @param {number} n - 透明度
  * @returns {string} - RGBA颜色值
  */
-function colorRgba (str,n){
+const colorRgba = (str, n) => {
     //十六进制颜色值的正则表达式
     var reg = /^#([0-9a-fA-f]{3}|[0-9a-fA-f]{6})$/;
     var sColor = str.toLowerCase();
@@ -431,7 +453,7 @@ function colorRgba (str,n){
  * 递归删除目录
  * @param {string} path - 目录路径
  */
-function deleteall(path) {
+const deleteall = (path) => {
     var files = [];
     if (fs.existsSync(path)) {
         files = fs.readdirSync(path);
